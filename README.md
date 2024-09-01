@@ -38,21 +38,22 @@ VCI と連携させるには、VirtualCast のタイトル画面で「VCI」メ�
    browser.Navigate(url);  
    ```
 
+   対象としている URL は以下の通りです：  
+   - http(s)://www.aozora.gr.jp/(example)/(example).(htm|html)  
+   
    対象としているタグは以下の通りです：  
-
    ```html:example.html
    <div class="metadata">  
-     <h1 class="title">example</h1>  
+     <h1 class="title">example</h1> (または <title>example</title>)  
      <h2 class="original_title">example</h2>  
      <h2 class="subtitle">example</h2>  
-     <h2 class="author">example</h2>  
+     <h2 class="author">example</h2> (または <h2>example</h2>)  
      <h2 class="translator">example</h2>  
    </div>  
-   <div class="main_text">example</div>  
+   <div class="main_text">example</div> (または <body>example</body>)  
    <div class="bibliographical_information">example</div>  
    <div class="after_text">example</div>  
    ```
-   - タグを合わせればローカルディスクから自作の HTML ファイルも読み込み可能ですが、それを前提に作成してはいません。  
 
 2. ［VirtualCast へ送信］ボタンを押すと、以下のように OSC でデータを送信します：  
    2-1. OSC でメタ情報の送信  
@@ -114,22 +115,22 @@ The "Aozora Reader OSC" can be obtained from the [products page on VirtualCast](
    browser.Navigate(url);  
    ```
 
-   The tags of interest are as follows:  
-
+   The URLs being targeted are as follows:  
+   - http(s)://www.aozora.gr.jp/(example)/(example).(htm|html)  
+   
+   The tags being targeted are as follows:  
    ```html:example.html
    <div class="metadata">  
-     <h1 class="title">example</h1>  
+     <h1 class="title">example</h1> (or <title>example</title>)  
      <h2 class="original_title">example</h2>  
      <h2 class="subtitle">example</h2>  
-     <h2 class="author">example</h2>  
+     <h2 class="author">example</h2> (or <h2>example</h2>)  
      <h2 class="translator">example</h2>  
    </div>  
-   <div class="main_text">example</div>  
+   <div class="main_text">example</div> (or <body>example</body>)  
    <div class="bibliographical_information">example</div>  
    <div class="after_text">example</div>  
    ```
-
-   - Although it is possible to read custom HTML files from the local disk if the tags match, this is not the intended use.  
 
 2. Pressing the [Send to VirtualCast] button sends the data via OSC as follows:  
    2-1. Sending metadata via OSC  

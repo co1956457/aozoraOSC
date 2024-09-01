@@ -15,7 +15,7 @@ namespace aozoraOSC
     public partial class Form1 : Form
     {
         // aozora OSC version
-        private readonly string aozoraVersion = "v1.0";
+        private readonly string aozoraVersion = "v1.1";
 
         // 初期設定
         private readonly int firstPage = 1;
@@ -39,6 +39,9 @@ namespace aozoraOSC
         public Form1()
         {
             InitializeComponent();
+
+            // フォームタイトルにバージョンを追加
+            this.Text += " " + aozoraVersion;
 
             // 既定値 URL を選択状態にしておく（URL 貼り付け操作を楽にする）
             textBox1.SelectAll();
@@ -72,9 +75,20 @@ namespace aozoraOSC
                 return;
 
             string url = textBox1.Text;
-            // URL の拡張子をチェックして、HTML ファイルのみを処理
-            if (url.EndsWith(".html", StringComparison.OrdinalIgnoreCase) ||
-                url.EndsWith(".htm", StringComparison.OrdinalIgnoreCase))
+
+            // URL をチェックして、青空文庫の HTML ファイルのみを処理
+            //
+            // URL をチェックしなければテキストブラウザ OSC が可能だが、
+            // WebBrowser コントロールの実体が IE であることや、
+            // 読み込み中から復帰できないページがあるといった関係から、
+            // 青空文庫限定とした。
+            //
+            if ((url.StartsWith("http://www.aozora.gr.jp/", StringComparison.OrdinalIgnoreCase) ||
+                 url.StartsWith("https://www.aozora.gr.jp/", StringComparison.OrdinalIgnoreCase))
+                 &&
+                (url.EndsWith(".html", StringComparison.OrdinalIgnoreCase) ||
+                 url.EndsWith(".htm", StringComparison.OrdinalIgnoreCase)  ||
+                 url.EndsWith("://www.aozora.gr.jp/", StringComparison.OrdinalIgnoreCase)))
             {
                 // 処理中
                 isProcessing = true;
@@ -170,6 +184,8 @@ namespace aozoraOSC
         // https://www.aozora.gr.jp/cards/000879/files/69_14933.html
         // 『マッチ売りの少女』　original_title = THE LITTLE MATCH-SELLER
         // https://www.aozora.gr.jp/cards/000019/files/194_23024.html
+        // 『盲腸』 指定 Attribute (属性) 無し
+        //  https://www.aozora.gr.jp/cards/000168/files/3626.html
         //
         private async Task RetrieveHtml()
         {
@@ -229,10 +245,16 @@ namespace aozoraOSC
             HtmlElementCollection h2Elements = doc.GetElementsByTagName("h2");
             HtmlElementCollection divElements = doc.GetElementsByTagName("div");
 
-            // class 名が "title" のすべての要素を取得
+            // 指定 Attribute (属性) 無し
+            // title: <title>
+            //  body: <body>
+            HtmlElementCollection titleElements = doc.GetElementsByTagName("title");
+            HtmlElementCollection bodyElements = doc.GetElementsByTagName("body");
+
+            // "h1" のすべての要素を取得
             foreach (HtmlElement element in h1Elements)
             {
-                // class 属性が "title" である要素を探す
+                // 属性 className が "title" である要素を探す
                 if (element.GetAttribute("className") == "title")
                 {
                     // テキストを取得
@@ -241,16 +263,33 @@ namespace aozoraOSC
                     if (innerText != null)
                     {
                         // 先頭の改行を削除
-                        titleText = innerText.TrimStart('\n', '\r'); // 念のため just in case
+                        titleText = innerText.TrimStart('\r', '\n'); // 念のため just in case
                     }
                     break; // ループを終了
                 }
             }
 
-            // class 名が "subtitle" のすべての要素を取得
+            // <h1 class="title"> が無かったら <title> から取得を試みる
+            if (titleText == "（作品名：情報無し）")
+            {
+                // "<title>" を取得
+                foreach (HtmlElement element in titleElements)
+                {
+                    // テキストを取得
+                    string innerText = element.InnerText;
+                    if (innerText != null)
+                    {
+                        titleText = innerText.TrimStart('\r', '\n'); // 念のため just in case
+                    }
+                    break;
+                }
+            }
+
+
+            // "h2" のすべての要素を取得
             foreach (HtmlElement element in h2Elements)
             {
-                // class 属性が "subtitle" である要素を探す
+                // 属性 className が "subtitle" である要素を探す
                 if (element.GetAttribute("className") == "subtitle")
                 {
                     // テキストを取得
@@ -259,17 +298,17 @@ namespace aozoraOSC
                     if (innerText != null)
                     {
                         // 先頭の改行を削除後 "\n" を１つ追加
-                        subtitleText = innerText.TrimStart('\n', '\r'); // 念のため just in case
+                        subtitleText = innerText.TrimStart('\r', '\n'); // 念のため just in case
                         subtitleText = "\n" + subtitleText;
                     }
                     break; // ループを終了
                 }
             }
 
-            // class 名が "original_title" のすべての要素を取得
+            // "h2" のすべての要素を取得
             foreach (HtmlElement element in h2Elements)
             {
-                // class 属性が "original_title" である要素を探す
+                // 属性 className が "original_title" である要素を探す
                 if (element.GetAttribute("className") == "original_title")
                 {
                     // テキストを取得
@@ -278,27 +317,18 @@ namespace aozoraOSC
                     if (innerText != null)
                     {
                         // 先頭の改行を削除後 "\n" を１つ追加
-                        original_titleText = innerText.TrimStart('\n', '\r'); // 念のため just in case
+                        original_titleText = innerText.TrimStart('\r', '\n'); // 念のため just in case
                         original_titleText = "\n" + original_titleText;
                     }
                     break; // ループを終了
                 }
             }
-            // 作品名をまとめて表示
-            string totalTitleText = titleText + subtitleText + original_titleText;
-            string resultTitle = totalTitleText;
-            // 表示幅が 40 を超える時は「…」を追加し以降の文字列削除
-            if (GetWidth(totalTitleText) > 40)
-            {
-                resultTitle = TruncateWithEllipsis(totalTitleText, 41);
-            }
-            textBox2.Text = resultTitle;
 
 
-            // class 名が "author" のすべての要素を取得
+            // "h2" のすべての要素を取得
             foreach (HtmlElement element in h2Elements)
             {
-                // class 属性が "author" である要素を探す
+                // 属性 className が "author" である要素を探す
                 if (element.GetAttribute("className") == "author")
                 {
                     // テキストを取得
@@ -307,19 +337,29 @@ namespace aozoraOSC
                     if (innerText != null)
                     {
                         // 先頭の改行を削除
-                        authorText = innerText.TrimStart('\n', '\r'); // 念のため just in case
+                        authorText = innerText.TrimStart('\r', '\n'); // 念のため just in case
                     }
                     break; // ループを終了
                 }
             }
-            // 著者名を表示
-            string resultAuthorText = authorText;
-            // 表示幅が 40 を超える時は「…」を追加し以降の文字列削除
-            if (GetWidth(authorText) > 40)
+
+            // <h2 class="author"> が無かったら <h2> から取得を試みる
+            if (authorText == "（著者名：情報無し）")
             {
-                resultAuthorText = TruncateWithEllipsis(authorText, 41);
+                // "<h2>" を取得
+                foreach (HtmlElement element in h2Elements)
+                {
+                    // テキストを取得
+                    string innerText = element.InnerText;
+
+                    if (innerText != null)
+                    {
+                        // 先頭の改行を削除
+                        authorText = innerText.TrimStart('\r', '\n'); // 念のため just in case
+                    }
+                    break;
+                }
             }
-            textBox3.Text = resultAuthorText;
 
 
             // class 名が "translator" のすべての要素を取得
@@ -334,39 +374,92 @@ namespace aozoraOSC
                     if (innerText != null)
                     {
                         // 先頭の改行を削除
-                        translatorText = innerText.TrimStart('\n', '\r'); // 念のため just in case
+                        translatorText = innerText.TrimStart('\r', '\n'); // 念のため just in case
                     }
                     break; // ループを終了
                 }
             }
-            // 翻訳者名を表示
-            string resultTranslatorText = translatorText;
-            // 表示幅が 40 を超える時は「…」を追加し以降の文字列削除
-            if (GetWidth(translatorText) > 40)
-            {
-                resultTranslatorText = TruncateWithEllipsis(translatorText, 41);
-            }
-            textBox4.Text = resultTranslatorText;
 
 
-            // class 名が "main_text" のすべての要素を取得
+            // "div" のすべての要素を取得
             foreach (HtmlElement element in divElements)
             {
-                // class属性が "main_text" である要素を探す
+                // 属性 className が "main_text" である要素を探す
                 if (element.GetAttribute("className") == "main_text")
                 {
-                    // テキストを取得
-                    string innerText = element.InnerText;
+                    // Create a new HTML string to replace <img> tags
+                    string newHtml = element.InnerHtml;
 
-                    if (innerText != null)
+                    // Find all <img> tags and replace them
+                    HtmlElementCollection imgElements = element.GetElementsByTagName("img");
+                    foreach (HtmlElement img in imgElements)
+                    {
+                        if (img.GetAttribute("className") == "gaiji")
+                        {
+                            string altText = img.GetAttribute("alt");
+                            newHtml = newHtml.Replace(img.OuterHtml, $"▒［外字{altText}］");
+                        }
+                        else
+                        {
+                            string altText = img.GetAttribute("alt");
+                            newHtml = newHtml.Replace(img.OuterHtml, $"🖼［{altText}］");
+                        }
+                    }
+
+                    // Update the element's inner HTML
+                    element.InnerHtml = newHtml;
+
+                    // Get the updated text
+                    string updatedText = element.InnerText;
+
+                    if (updatedText != null)
                     {
                         // 先頭の改行を削除
-                        main_textText = innerText.TrimStart('\n', '\r');
+                        main_textText = updatedText.TrimStart('\r', '\n');
 
                         // 本文終了：底本との仕切り
                         main_textText += "\r\n\r\n\r\n――――――――――――――――――――\r\n\r\n";
                     }
                     break; // ループを終了
+                }
+            }
+
+            // <div class="main_text"> が無かったら <body> から取得を試みる
+            if (main_textText == "（本文：情報無し）") 
+            {
+                // "<body>" を取得
+                foreach (HtmlElement element in bodyElements)
+                {
+                    // Create a new HTML string to replace <img> tags
+                    string newHtml = element.InnerHtml;
+
+                    // Find all <img> tags and replace them
+                    HtmlElementCollection imgElements = element.GetElementsByTagName("img");
+                    foreach (HtmlElement img in imgElements)
+                    {
+                        if (img.GetAttribute("className") == "gaiji")
+                        {
+                            string altText = img.GetAttribute("alt");
+                            newHtml = newHtml.Replace(img.OuterHtml, $"▒［外字{altText}］");
+                        }
+                        else
+                        {
+                            string altText = img.GetAttribute("alt");
+                            newHtml = newHtml.Replace(img.OuterHtml, $"🖼［{altText}］");
+                        }
+                    }
+
+                    // Update the bodyElement's inner HTML
+                    element.InnerHtml = newHtml;
+
+                    // Get the updated text
+                    string updatedText = element.InnerText;
+
+                    if (updatedText != null)
+                    {
+                        main_textText = updatedText.TrimStart('\r', '\n');
+                    }
+                    break;
                 }
             }
 
@@ -382,7 +475,7 @@ namespace aozoraOSC
                     if (innerText != null)
                     {
                         // 先頭の改行を削除
-                        biblioText = innerText.TrimStart('\n', '\r');
+                        biblioText = innerText.TrimStart('\r', '\n');
                     }
                     break; // ループを終了
                 }
@@ -400,15 +493,50 @@ namespace aozoraOSC
                     if (innerText != null)
                     {
                         // 先頭の改行を削除
-                        after_textText = innerText.TrimStart('\n', '\r');
+                        after_textText = innerText.TrimStart('\r', '\n');
                     }
                     break; // ループを終了
                 }
             }
+
+
+            // 作品名をまとめて表示
+            string totalTitleText = titleText + subtitleText + original_titleText;
+
+            // 表示幅が 40 を超える時の対応
+            string resultTitleText = totalTitleText;
+            string resultAuthorText = authorText;
+            string resultTranslatorText = translatorText;
+
             // 本文をまとめて表示
             string mainText = main_textText + biblioText + after_textText;
-            textBox5.Text = mainText;
 
+
+            // 表示幅が 40 を超える時は「…」を追加し以降の文字列削除
+            // 作品名
+            if (GetWidth(totalTitleText) > 40)
+            {
+                resultTitleText = TruncateWithEllipsis(totalTitleText, 41);
+            }
+            textBox2.Text = resultTitleText;
+
+            // 著者名
+            if (GetWidth(authorText) > 40)
+            {
+                resultAuthorText = TruncateWithEllipsis(authorText, 41);
+            }
+            textBox3.Text = resultAuthorText;
+
+            // 翻訳者名
+            if (GetWidth(translatorText) > 40)
+            {
+                resultTranslatorText = TruncateWithEllipsis(translatorText, 41);
+            }
+            textBox4.Text = resultTranslatorText;
+
+            // 本文
+            textBox5.Text = mainText;
+            
             // 文字列操作の関係から "\r" CR: Carriage Return を削除（改行は "\n" のみとする）
             // 全角基準で 20, 21, 22 文字目を禁則処理の対象とするため、引数は 19 * 2 = 38 を渡す
             string mainTextWithoutCR = mainText.Replace("\r", "");
