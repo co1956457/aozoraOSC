@@ -3,19 +3,48 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
 using System.Drawing;
+using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-
-using System.IO; // for debugging purposes
 
 namespace aozoraOSC
 {
     public partial class Form1 : Form
     {
         // aozora OSC version
-        private readonly string aozoraVersion = "v1.1";
+        private readonly string aozoraVersion = "v2.0";
+        private string homeUrl = "https://www.aozora.gr.jp";
+
+        // WebBrowser コントロールの実体が IE (ver.11) であることや、
+        // 読み込み中から復帰できないページがあるといった関係から、
+        // 青空文庫とローカルファイルに限定。
+        //
+        // 許可する開始文字列
+        // たくさん設定できるので、List を採用
+        //
+        // 許可する終了文字列は指定しない
+        // ※拡張子指定やディレクトリ判定を行ってもMIME判定不能…
+        // 　例えばこれは回避不能 → https://www.aozora.gr.jp/cards/000148/files/789
+        // 
+        private readonly List<string> _allowedStartWith = new List<string>
+        {
+            "about:blank",
+            @"^[A-Z]:\\",
+            @"^[A-Z]:/",
+            "file:///",
+            "http://www.aozora.gr.jp",
+            "https://www.aozora.gr.jp"
+
+            // "http://search.bungo.app",
+            // "https://search.bungo.app",
+            // "http://yozora.main.jp",
+            // "https://yozora.main.jp",
+            // "https://virtualcast.jp", IE v.11 対象外: サイトの作り上、 DocumentCompleted しない?
+        };
+
 
         // 初期設定
         private readonly int firstPage = 1;
@@ -27,11 +56,19 @@ namespace aozoraOSC
         private bool lastPageReset = false;
 
         // WebBrowserコントロールをクラスレベルで宣言
-        private WebBrowser browser;
+        private WebBrowser textBrowser;
+
+        // null対応
+        private WebBrowser nullBrowser;
 
         // 連打防止用
         private bool isProcessing = false;
 
+        // OSC 中止用
+        private bool isBreak = false;
+
+        //はじめに表示用
+        private bool isIntroduce = true;
 
         //
         // 起動後最初に実行される
@@ -43,13 +80,38 @@ namespace aozoraOSC
             // フォームタイトルにバージョンを追加
             this.Text += " " + aozoraVersion;
 
+            backButton.Enabled = false;
+            forwardButton.Enabled = false;
+
             // 既定値 URL を選択状態にしておく（URL 貼り付け操作を楽にする）
             textBox1.SelectAll();
 
             // 送信ページの範囲指定（lastPage は自動で設定される）
             comboBox1.SelectedItem = firstPage.ToString();
-        }
 
+
+            string introduction = "<!DOCTYPE html><html lang=\"ja\"><head><meta charset=\"utf-8\"></head><body>はじめに<br><br>便利なショートカットキー：[Alt] + [←] / [→]<br><br>このウィンドウは、インターネットエクスプローラー (ver.11) の技術を使っています。技術面、安全面の問題からアクセスは以下のサイトに限定しています。<br>・青空文庫：<a href=\"https://www.aozora.gr.jp/\">https://www.aozora.gr.jp</a><br>・ローカルドライブ：例）file:///c:/<br><br><br>Introduction<br><br>Useful Shortcut Keys: [Alt] + [←] / [→]<br><br>This window utilizes Internet Explorer (ver.11) technology. For technical and security reasons, access is restricted to the following sites:<br><br>・Aozora Bunko: <a href=\"https://www.aozora.gr.jp/\">https://www.aozora.gr.jp</a><br>・Local Drive: e.g. file:///c:/<br></body></html>";
+
+            // 右側テキストブラウザ
+            textBrowser = new WebBrowser();
+            textBrowser.ScriptErrorsSuppressed = true;
+            textBrowser.DocumentText = introduction;
+            textBrowser.DocumentCompleted += new WebBrowserDocumentCompletedEventHandler(textBrowser_DocumentCompleted);
+
+            nullBrowser = new WebBrowser();
+            string dummyHtml = "";
+            nullBrowser.DocumentText = dummyHtml;
+
+            webBrowser1.DocumentText = introduction;
+
+            // ref. https://learn.microsoft.com/ja-jp/dotnet/desktop/winforms/controls/how-to-add-web-browser-capabilities-to-a-windows-forms-application?view=netframeworkdesktop-4.8
+            // The following events are not visible in the designer, so
+            // you must associate them with their event-handlers in code.
+            webBrowser1.CanGoBackChanged +=
+                new EventHandler(webBrowser1_CanGoBackChanged);
+            webBrowser1.CanGoForwardChanged +=
+                new EventHandler(webBrowser1_CanGoForwardChanged);
+        }
 
         //
         // URL 入力後の Enter キー処理
@@ -64,9 +126,51 @@ namespace aozoraOSC
             }
         }
 
+        private void isProcessingTrue()
+        {             
+            // 処理中
+            isProcessing = true;
+
+            // ボタンとコンボボックス（ページ範囲指定）を無効化し、テキストを変更
+            textBox1.Enabled = false;
+            button1.Enabled = false;
+            button1.Text = "⌛";
+            button2.Enabled = false;
+            button2.Text = "⌛取得中";
+            comboBox1.Enabled = false;
+            comboBox2.Enabled = false;
+
+            // ブラウザ関係
+            backButton.Enabled = false;
+            forwardButton.Enabled = false;
+            homeButton.Enabled = false;
+        }
+
+
+        private void isProcessingFalse()
+        {
+            // ボタンとコンボボックスを再度有効化し、テキストを戻す
+            textBox1.Enabled = true;
+            button1.Enabled = true;
+            button1.Text = "➤";
+            button2.Enabled = true;
+            button2.Text = "➤VirtualCast";
+            comboBox1.Enabled = true;
+            comboBox2.Enabled = true;
+            label3.Text = "";
+            label8.Text = "";
+
+            // ブラウザ関係
+            backButton.Enabled = webBrowser1.CanGoBack;
+            forwardButton.Enabled = webBrowser1.CanGoForward;
+            homeButton.Enabled = true;
+
+            // 処理終了
+            isProcessing = false;
+        }
 
         //
-        // 青空文庫からデータ取得
+        // URL からデータ取得
         //
         private async void button1_Click(object sender, EventArgs e)
         {
@@ -76,56 +180,46 @@ namespace aozoraOSC
 
             string url = textBox1.Text;
 
-            // URL をチェックして、青空文庫の HTML ファイルのみを処理
-            //
-            // URL をチェックしなければテキストブラウザ OSC が可能だが、
-            // WebBrowser コントロールの実体が IE であることや、
-            // 読み込み中から復帰できないページがあるといった関係から、
-            // 青空文庫限定とした。
-            //
-            if ((url.StartsWith("http://www.aozora.gr.jp/", StringComparison.OrdinalIgnoreCase) ||
-                 url.StartsWith("https://www.aozora.gr.jp/", StringComparison.OrdinalIgnoreCase))
-                 &&
-                (url.EndsWith(".html", StringComparison.OrdinalIgnoreCase) ||
-                 url.EndsWith(".htm", StringComparison.OrdinalIgnoreCase)  ||
-                 url.EndsWith("://www.aozora.gr.jp/", StringComparison.OrdinalIgnoreCase)))
+            // 許可された URL かチェック
+            bool startsWithAllowed = _allowedStartWith.Any(pattern => Regex.IsMatch(url, pattern, RegexOptions.IgnoreCase));
+
+            if (startsWithAllowed)
             {
-                // 処理中
-                isProcessing = true;
-
-                // ページ範囲の無限ループ回避用
-                firstPageReset = true;
-                lastPageReset = true;
-
-                // ボタンを無効化し、テキストを変更
-                button1.Enabled = false;
-                button1.Text = "⌛取得中";
-                button2.Enabled = false;
-                button2.Text = "⌛取得中";
-
-                // 連打防止の強化
-                await Task.Delay(300);
-
                 try
                 {
+                    // ページ範囲の無限ループ回避用
+                    firstPageReset = true;
+                    lastPageReset = true;
+
+                    // ボタンを無効化し、「⌛」を表示
+                    isProcessingTrue();
+                    label3.Text = "✖";
+                    
+                    // 連打防止の強化
+                    await Task.Delay(250);
+
                     // ページ作成処理を開始し、完了を待つ
                     await RetrieveHtml();
-                }
-                finally
-                {
-                    // ボタンを再度有効化し、テキストを戻す
-                    button1.Enabled = true;
-                    button1.Text = "取得/Get";
-                    button2.Enabled = true;
-                    button2.Text = "VirtualCastへ送信";
+                    // RetrieveHtml()
+                    //  -> webBrowser1.Navigate(url) => webBrowser1_Navigating() ここで処理中にする
+                    //    -> textBrowser.Navigate(url) => textBrowser_DocumentCompleted() ここで処理終了
 
-                    // 処理終了
-                    isProcessing = false;
+                }
+                finally // 例外が発生しても実行される
+                {
+                    // 念のため復帰しておく just in case
+                    // ボタンを再度有効化し、テキストを戻す
+                    isProcessingFalse();
                 }
             }
             else
             {
-                MessageBox.Show("青空文庫 XHTML ファイルの URL '***.html' を入力してください。\n\n例)  https://www.aozora.gr.jp/cards/000081/files/43754_17659.html");
+                // 許可されていないドメインへのナビゲーションをキャンセル
+                textBox2.Text = "⚠️許可範囲外⚠️";
+                textBox3.Text = "⚠️リンク先: " + url + " ⚠️";
+
+                // ボタンを再度有効化し、テキストを戻す
+                isProcessingFalse();
             }
         }
 
@@ -139,16 +233,8 @@ namespace aozoraOSC
             if (isProcessing)
                 return;
 
-            // 処理中
-            isProcessing = true;
-
-            // ボタンとコンボボックス（ページ範囲指定）を無効化し、テキストを変更
-            // button2 のテキストは処理中に動的変更
-            button1.Enabled = false;
-            button1.Text = "🍣送信中";
-            button2.Enabled = false;
-            comboBox1.Enabled = false;
-            comboBox2.Enabled = false;
+            // ボタンを無効化し、「⌛」を表示
+            isProcessingTrue();
 
             try
             {
@@ -157,16 +243,8 @@ namespace aozoraOSC
             }
             finally
             {
-                // ボタンとコンボボックスを再度有効化し、テキストを戻す
-                button1.Enabled = true;
-                button1.Text = "取得/Get";
-                button2.Enabled = true;
-                button2.Text = "VirtualCastに送信";
-                comboBox1.Enabled = true;
-                comboBox2.Enabled = true;
-
-                // 処理終了
-                isProcessing = false;
+                // ボタンを再度有効化し、テキストを戻す
+                isProcessingFalse();
             }
         }
 
@@ -192,16 +270,8 @@ namespace aozoraOSC
             // URL 取得
             string url = textBox1.Text;
 
-            // WebBrowserコントロールを作成（既に作成されていれば再利用）
-            if (browser == null)
-            {
-                browser = new WebBrowser();
-                browser.ScriptErrorsSuppressed = true;
-                browser.DocumentCompleted += EditData;
-            }
-
             // ページを読み込む
-            browser.Navigate(url);
+            webBrowser1.Navigate(url);
 
             // DocumentCompleted イベントを待つ
             await Task.Run(() =>
@@ -211,22 +281,93 @@ namespace aozoraOSC
                 handler = (s, args) =>
                 {
                     tcs.SetResult(true);
-                    browser.DocumentCompleted -= handler;
+                    //browser.DocumentCompleted -= handler;
+                    webBrowser1.DocumentCompleted -= handler;
                 };
-                browser.DocumentCompleted += handler;
+                //browser.DocumentCompleted += handler;
+                webBrowser1.DocumentCompleted += handler;
                 tcs.Task.Wait();
             });
+        }
+
+        //
+        // 青空文庫のみ 
+        //
+        private void webBrowser1_Navigating(object sender, WebBrowserNavigatingEventArgs e)
+        {
+            //Uri uri = e.Url;
+
+            // 許可された URL かチェック
+            string url = e.Url.ToString();
+
+            bool startsWithAllowed = _allowedStartWith.Any(pattern => Regex.IsMatch(url, pattern, RegexOptions.IgnoreCase));
+
+            if (startsWithAllowed)
+            {
+                if (isIntroduce)
+                {
+                    isIntroduce = false;
+                }
+                else
+                {
+
+                    // ページ範囲の無限ループ回避用
+                    firstPageReset = true;
+                    lastPageReset = true;
+
+                    // ボタンを無効化し、「⌛」を表示
+                    isProcessingTrue();
+                    label3.Text = "✖";
+
+                    textBrowser.Navigate(url);
+                }
+            }
+            else
+            {
+                // 許可されていないドメインへのナビゲーションをキャンセル
+                e.Cancel = true;
+                textBox2.Text = "⚠️許可範囲外⚠️";
+                textBox3.Text = "⚠️リンク先: " + url + " ⚠️";
+            }
+        }
+
+        //
+        // ポップアップウィンドウが開くのを防ぐ
+        //
+        private void webBrowser1_NewWindow(object sender, System.ComponentModel.CancelEventArgs e)
+        {
+            // 新しいウィンドウが開くのを防ぐ
+            // 新しいウィンドウのURLは取得不能
+            // 新しいウィンドウが開いたら、aozoraOSC からは制御不能
+            e.Cancel = true;
+            textBox2.Text = "⚠️新しいウィンドウをキャンセル⚠️";
+            textBox3.Text = "⚠️右クリックからリンクをコピーして⚠️";
+            textBox4.Text = "⚠️URL 欄に貼り付けてください⚠️";
         }
 
         //
         // 読み込んだ情報から必要な情報を抽出し
         // 文字列処理や本文分割等を実施
         //
-        private void EditData(object sender, WebBrowserDocumentCompletedEventArgs e)
+        private void textBrowser_DocumentCompleted(object sender, WebBrowserDocumentCompletedEventArgs e)
         {
             // WebBrowser コントロールの Document プロパティを取得
-            WebBrowser browser = (WebBrowser)sender;
-            HtmlDocument doc = browser.Document;
+            WebBrowser browser = new WebBrowser();
+            browser = (WebBrowser)sender;
+
+            textBox1.Text = browser.Url.ToString();
+
+            HtmlDocument doc;
+
+            if (browser.Document == null)
+            {
+                // null対応
+                doc = nullBrowser.Document;
+            }
+            else
+            {
+                doc = browser.Document;
+            }
 
             // 要素を初期化（情報がなかった時の既定値）
             string titleText = "（作品名：情報無し）";
@@ -248,8 +389,10 @@ namespace aozoraOSC
             // 指定 Attribute (属性) 無し
             // title: <title>
             //  body: <body>
+            //  meta: <meta name = "DC.Title, DC.Creator... 必ずあるわけではない
             HtmlElementCollection titleElements = doc.GetElementsByTagName("title");
             HtmlElementCollection bodyElements = doc.GetElementsByTagName("body");
+            HtmlElementCollection metaElements = doc.GetElementsByTagName("meta");
 
             // "h1" のすべての要素を取得
             foreach (HtmlElement element in h1Elements)
@@ -269,7 +412,29 @@ namespace aozoraOSC
                 }
             }
 
-            // <h1 class="title"> が無かったら <title> から取得を試みる
+            // <h1 class="title"> が無かったら <meta name="DC.Title" content="作品名" /> から取得を試みる
+            if (titleText == "（作品名：情報無し）")
+            {
+                // "<meta>" を取得
+                foreach (HtmlElement element in metaElements)
+                {
+                    string name = element.GetAttribute("name");
+                    if (name.Equals("DC.Title", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // "DC.Title" タグが見つかった場合、content 属性を取得
+                        string innerText = element.GetAttribute("content");
+                        if (innerText != null)
+                        {
+                            titleText = innerText.TrimStart('\r', '\n'); // 念のため just in case
+                        }
+                        break;
+                    }
+                }
+            }
+
+            // <h1 class="title"> が無く、
+            // <meta name="DC.Title" content="作品名" /> も無かったら
+            // <title> から取得を試みる
             if (titleText == "（作品名：情報無し）")
             {
                 // "<title>" を取得
@@ -343,7 +508,29 @@ namespace aozoraOSC
                 }
             }
 
-            // <h2 class="author"> が無かったら <h2> から取得を試みる
+            // <h2 class="author"> が無かったら <meta name="DC.Creator" content="著者名" /> から取得を試みる
+            if (authorText == "（著者名：情報無し）")
+            {
+                // "<meta>" を取得
+                foreach (HtmlElement element in metaElements)
+                {
+                    string name = element.GetAttribute("name");
+                    if (name.Equals("DC.Creator", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // "DC.Creator" タグが見つかった場合、content 属性を取得
+                        string innerText = element.GetAttribute("content");
+                        if (innerText != null)
+                        {
+                            authorText = innerText.TrimStart('\r', '\n'); // 念のため just in case
+                        }
+                        break;
+                    }
+                }
+            }
+
+            // <h2 class="author"> が無く、
+            // <meta name="DC.Creator" content="著者名" /> も無かったら
+            // <h2> から取得を試みる
             if (authorText == "（著者名：情報無し）")
             {
                 // "<h2>" を取得
@@ -425,7 +612,7 @@ namespace aozoraOSC
             }
 
             // <div class="main_text"> が無かったら <body> から取得を試みる
-            if (main_textText == "（本文：情報無し）") 
+            if (main_textText == "（本文：情報無し）")
             {
                 // "<body>" を取得
                 foreach (HtmlElement element in bodyElements)
@@ -536,7 +723,7 @@ namespace aozoraOSC
 
             // 本文
             textBox5.Text = mainText;
-            
+
             // 文字列操作の関係から "\r" CR: Carriage Return を削除（改行は "\n" のみとする）
             // 全角基準で 20, 21, 22 文字目を禁則処理の対象とするため、引数は 19 * 2 = 38 を渡す
             string mainTextWithoutCR = mainText.Replace("\r", "");
@@ -575,6 +762,9 @@ namespace aozoraOSC
             lastPage = chunks.Length;
             comboBox1.SelectedItem = firstPage.ToString();
             comboBox2.SelectedItem = lastPage.ToString();
+
+            // ボタンを再度有効化し、テキストを戻す
+            isProcessingFalse();
         }
 
         //
@@ -650,7 +840,7 @@ namespace aozoraOSC
         //
         // 20文字基準で禁則処理を行い改行を追加
         //
-        static string AddLineBreaks(string text, int maxLineLength)
+        private string AddLineBreaks(string text, int maxLineLength)
         {
             var result = new StringBuilder();
             int index = 0;
@@ -781,13 +971,13 @@ namespace aozoraOSC
         //
         static bool IsOpeningBracket(char c)
         {
-                // 始め括弧類
-                // c == '‘' || c == '“' || 始めと終わりの区別に難あり
+            // 始め括弧類
+            // c == '‘' || c == '“' || 始めと終わりの区別に難あり
             return c == '「' || c == '『'
                 || c == '【' || c == '〖' || c == '〔' || c == '〘'
                 || c == '〈' || c == '《' || c == '｟' || c == '«'
                 || c == '（' || c == '［' || c == '｛' // 全角
-                || c == '('  || c == '['  || c == '{'; // 半角
+                || c == '(' || c == '[' || c == '{'; // 半角
         }
 
         //
@@ -796,14 +986,14 @@ namespace aozoraOSC
         //
         static bool IsClosingBracket(char c)
         {
-                // 終わり括弧類
-                // c == '’' || c == '”' || 始めと終わりの区別に難あり
+            // 終わり括弧類
+            // c == '’' || c == '”' || 始めと終わりの区別に難あり
             return c == '」' || c == '』'
                 || c == '】' || c == '〗' || c == '〕' || c == '〙'
                 || c == '〉' || c == '》' || c == '｠' || c == '»'
                 || c == '）' || c == '］' || c == '｝' // 全角
-                || c == ')'  || c == ']'  || c == '}'  // 半角
-                // 行頭禁則和字
+                || c == ')' || c == ']' || c == '}'  // 半角
+                                                     // 行頭禁則和字
                 || c == 'ゝ' || c == 'ゞ'
                 || c == 'ー' // カタカナの長音
                 || c == 'ァ' || c == 'ィ' || c == 'ゥ' || c == 'ェ' || c == 'ォ'
@@ -818,13 +1008,13 @@ namespace aozoraOSC
                 // || c == '‐' || c == '゠' || c == '–' || c == '〜' || c == '～'
                 // 区切り約物
                 || c == '？' || c == '！' || c == '‼' || c == '⁇' || c == '⁈' || c == '⁉'
-                || c == '?'  || c == '!'  //半角
-                //中点類
+                || c == '?' || c == '!'  //半角
+                                         //中点類
                 || c == '：' || c == '；' || c == '／' || c == '・'
-                || c == ':'  || c == ';'  || c == '/'
+                || c == ':' || c == ';' || c == '/'
                 // 句点類
                 || c == '，' || c == '．' // 全角
-                || c == ','  || c == '.'  // 半角
+                || c == ',' || c == '.'  // 半角
                 || c == '、' || c == '。' || c == '〟';
         }
 
@@ -841,7 +1031,7 @@ namespace aozoraOSC
         // 句読点変換
         // 連続タグ削除（本文）
         //
-        static string AddTagsToSpecialCharacters(string input, bool tagsDelete)
+        private string AddTagsToSpecialCharacters(string input, bool tagsDelete)
         {
             StringBuilder sb = new StringBuilder();
 
@@ -964,7 +1154,7 @@ namespace aozoraOSC
         //
         // ページ作成: 10 行ごとに配列に追加
         //
-        public static string[] SplitIntoLines(string text)
+        private string[] SplitIntoLines(string text)
         {
             // 改行で分割して配列に格納
             string[] lines = text.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
@@ -1024,9 +1214,18 @@ namespace aozoraOSC
             // 分割テキストを OSC で送信
             string[] chunks = pages; // 本文全文を代入
 
+            // OSC 中止用
+            label8.Text = "✖";
+
             // 選択されたページ範囲
             for (int i = sendSelectedFirstPage - 1; i < sendSelectedLastPage; i++)
             {
+
+                // 中止
+                if (isBreak)
+                    break;
+
+
                 // ページ番号と分割テキスト
                 int sendPageNumber = i - sendSelectedFirstPage + 2;
                 string sendPartText = chunks[i];
@@ -1048,7 +1247,7 @@ namespace aozoraOSC
                 await Task.Delay(40);
             }
             // 連打防止用
-            await Task.Delay(300);
+            await Task.Delay(250);
         }
 
 
@@ -1126,27 +1325,35 @@ namespace aozoraOSC
                 int currentFirstPage = Convert.ToInt32(comboBox1.SelectedItem); // string を int に変換
                 int currentLastPage = Convert.ToInt32(comboBox2.SelectedItem);
 
-                // 起動時は 0 が入る
-                if (currentLastPage == 0)
+                comboBox2.SuspendLayout(); // comboBox2 の描画更新を一時停止
+                try
                 {
-                    currentLastPage = 2;
-                }
+                    // 起動時は 0 が入る
+                    if (currentLastPage == 0)
+                    {
+                        currentLastPage = 2;
+                    }
 
-                // ドロップダウンリストの再設定
-                // 指定ページから最後のページまで
-                comboBox2.Items.Clear();
-                for (int i = currentFirstPage; i <= lastPage; i++)
+                    // ドロップダウンリストの再設定
+                    // 指定ページから最後のページまで
+                    comboBox2.Items.Clear();
+                    for (int i = currentFirstPage; i <= lastPage; i++)
+                    {
+                        comboBox2.Items.Add(i.ToString());
+                    }
+
+                    // 念のため just in case
+                    if (currentLastPage < currentFirstPage)
+                    {
+                        currentLastPage = currentFirstPage;
+                    }
+
+                    comboBox2.SelectedItem = currentLastPage.ToString();
+                }
+                finally
                 {
-                    comboBox2.Items.Add(i.ToString());
+                    comboBox2.ResumeLayout(true); // 描画更新を再開し、変更を適用
                 }
-
-                // 念のため just in case
-                if (currentLastPage < currentFirstPage)
-                {
-                    currentLastPage = currentFirstPage;
-                }
-
-                comboBox2.SelectedItem = currentLastPage.ToString();
             }
         }
 
@@ -1166,22 +1373,184 @@ namespace aozoraOSC
                 int currentFirstPage = Convert.ToInt32(comboBox1.SelectedItem); // string を int に変換
                 int currentLastPage = Convert.ToInt32(comboBox2.SelectedItem);
 
-                // ドロップダウンリストの再設定
-                // 最初のページから指定ページまで
-                comboBox1.Items.Clear();
-                for (int i = firstPage; i <= currentLastPage; i++)
+                comboBox1.SuspendLayout(); // comboBox1 の描画更新を一時停止
+                try
                 {
-                    comboBox1.Items.Add(i.ToString());
-                }
+                    // ドロップダウンリストの再設定
+                    // 最初のページから指定ページまで
+                    comboBox1.Items.Clear();
+                    for (int i = firstPage; i <= currentLastPage; i++)
+                    {
+                        comboBox1.Items.Add(i.ToString());
+                    }
 
-                // 念のため just in case
-                if (currentFirstPage > currentLastPage)
+                    // 念のため just in case
+                    if (currentFirstPage > currentLastPage)
+                    {
+                        currentFirstPage = currentLastPage;
+                    }
+
+                    comboBox1.SelectedItem = currentFirstPage.ToString();
+                }
+                finally
                 {
-                    currentFirstPage = currentLastPage;
+                    comboBox1.ResumeLayout(true); // 描画更新を再開し、変更を適用
                 }
-
-                comboBox1.SelectedItem = currentFirstPage.ToString();
             }
+        }
+
+        // フォームを閉じたとき
+        private void Form1_FormClosed(object sender, FormClosedEventArgs e)
+        {
+            if (webBrowser1 != null)
+            {
+                webBrowser1.Dispose();
+                webBrowser1 = null;
+            }
+        }
+
+        //
+        // ファイルとフォルダの D&D
+        // リンクの D&D はできなかった (JavaScript 組み込みでもだめだった)
+        //
+        private void textBox1_DragEnter(object sender, DragEventArgs e)
+        {
+            // ドラッグされているデータがファイルまたはフォルダであるか確認
+            if (e.Data.GetDataPresent(DataFormats.FileDrop))
+            {
+                e.Effect = DragDropEffects.Copy;
+            }
+            else
+            {
+                e.Effect = DragDropEffects.None;
+            }
+        }
+
+        private void textBox1_DragDrop(object sender, DragEventArgs e)
+        {
+            // ドロップされたデータがファイルまたはフォルダであるか確認
+            if (e.Data.GetDataPresent(DataFormats.FileDrop))
+            {
+                string[] paths = (string[])e.Data.GetData(DataFormats.FileDrop);
+
+                if (paths.Length > 0)
+                {
+                    // 最初のパスがファイルまたはフォルダであるかを確認
+                    string path = paths[0];
+
+                    if (File.Exists(path) || Directory.Exists(path))
+                    {
+                        // ファイルまたはフォルダのパスを textBox1 に表示
+                        textBox1.Text = path;
+                    }
+                    else
+                    {
+                        textBox1.Text = "ドラッグ＆ドロップされたアイテムは存在しません。";
+                    }
+                }
+            }
+        }
+
+        private async void label8_Click(object sender, EventArgs e)
+        {
+            isBreak = true;
+
+            await Task.Delay(100);
+            label8.Text = "";
+            isBreak = false;
+        }
+
+        // Navigates webBrowser1 to the previous page in the history.
+        private void backButton_Click(object sender, EventArgs e)
+        {
+            // 処理中でないことを確認
+            if (isProcessing)
+                return;
+
+            webBrowser1.GoBack();
+        }
+
+        // Disables the Back button at the beginning of the navigation history.
+        private void webBrowser1_CanGoBackChanged(object sender, EventArgs e)
+        {
+            backButton.Enabled = webBrowser1.CanGoBack;
+        }
+
+        // Navigates webBrowser1 to the next page in history.
+        private void forwardButton_Click(object sender, EventArgs e)
+        {
+            // 処理中でないことを確認
+            if (isProcessing)
+                return;
+
+            webBrowser1.GoForward();
+        }
+
+        // Disables the Forward button at the end of navigation history.
+        private void webBrowser1_CanGoForwardChanged(object sender, EventArgs e)
+        {
+            forwardButton.Enabled = webBrowser1.CanGoForward;
+        }
+
+        private void homeButton_Click(object sender, EventArgs e)
+        {
+            // 処理中でないことを確認
+            if (isProcessing)
+                return;
+
+            // ページを読み込む
+            webBrowser1.Navigate(homeUrl);
+        }
+
+        private void buttonGrayout_Paint(object sender, PaintEventArgs e)
+        {
+            Button btn = (Button)sender;
+            Color textColor;
+
+            // ボタンが有効かどうかでテキストの色を決定
+            if (btn.Enabled)
+            {
+                textColor = btn.ForeColor; // 通常時は設定されているForeCrolorを使用
+            }
+            else
+            {
+                textColor = Color.DimGray; // 無効時は灰色
+            }
+
+            // テキスト描画の準備
+            TextFormatFlags flags = TextFormatFlags.HorizontalCenter |
+                                    TextFormatFlags.VerticalCenter |
+                                    TextFormatFlags.WordBreak; // 必要に応じて改行などを考慮
+
+            // ボタンの背景を描画 (オプション: デフォルトの背景が不要な場合)
+            // e.Graphics.FillRectangle(new SolidBrush(btn.BackColor), btn.ClientRectangle);
+
+            // テキストを描画
+            TextRenderer.DrawText(e.Graphics, btn.Text, btn.Font, btn.ClientRectangle, textColor, flags);
+
+            // フォーカスがある場合の描画 (オプション)
+            if (btn.Focused && btn.Enabled)
+            {
+                ControlPaint.DrawFocusRectangle(e.Graphics, btn.ClientRectangle);
+            }
+        }
+
+        private void label3_Click(object sender, EventArgs e)
+        {
+            webBrowser1.Stop();
+            textBrowser.Stop();
+            label3.Text = "";
+            isProcessingFalse();
+        }
+
+        private void label3_MouseEnter(object sender, EventArgs e)
+        {
+            label3.BackColor = Color.Gainsboro;
+        }
+
+        private void label3_MouseLeave(object sender, EventArgs e)
+        {
+            label3.BackColor = Color.White;
         }
     }
 }
